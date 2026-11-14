@@ -1,17 +1,34 @@
 # Mini Redis
 
-A learning project: a small Redis-inspired TCP server written in TypeScript with Node's built-in `net` module.
+A learning project: a small Redis-inspired TCP server in TypeScript (Node `net` + RESP), with O(1) LRU, lazy/active TTL expiry, and AOF persistence.
 
-## Run it
+Deeper design notes: [docs/architecture.md](docs/architecture.md).
+
+## Project structure
+
+```text
+src/
+  index.ts      Entry point
+  config.ts     Env configuration
+  server.ts     TCP server, command queue
+  resp.ts       RESP parse / encode
+  commands.ts   Command table + handlers
+  store.ts      Map + LRU + TTL
+  aof.ts        AOF writer + APPENDFSYNC
+  replay.ts     AOF startup replay
+test/           node:test suite
+bench/          Load generator + plot script
+docs/           Architecture and benchmark charts
+```
+
+## Run
 
 ```sh
 npm install
 npm start
 ```
 
-The server listens on `127.0.0.1:6379` by default. Connect with `redis-cli -h 127.0.0.1 -p 6379`.
-
-Configuration:
+Listens on `127.0.0.1:6379` by default. Connect with `redis-cli -h 127.0.0.1 -p 6379`.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -19,33 +36,21 @@ Configuration:
 | `PORT` | `6379` | TCP port |
 | `MAXMEMORY_MB` | `64` | Approximate in-memory storage limit |
 | `AOF_FILE` | `appendonly.aof` | Append-only persistence file |
-| `AOF_BATCH_MS` | `2` | Maximum wait before flushing a small AOF batch (`everysec` / `no`) |
-| `APPENDFSYNC` | `everysec` | AOF durability: `always`, `everysec`, or `no` (see below) |
+| `AOF_BATCH_MS` | `2` | Max wait before flushing a small AOF batch (`everysec` / `no`) |
+| `APPENDFSYNC` | `everysec` | `always` \| `everysec` \| `no` |
+
+```sh
+npm run build    # tsc → dist/
+npm run dev      # tsx watch
+```
 
 ## Commands
 
-`PING [message]`, `SET key value [EX seconds|PX milliseconds]`, `GET key`, `DEL key [key ...]`, `EXISTS key [key ...]`, `INCR key`, `EXPIRE key seconds`, and `TTL key`.
+`PING [message]`, `SET key value [EX seconds|PX milliseconds]`, `GET key`, `DEL key [key ...]`, `EXISTS key [key ...]`, `INCR key`, `EXPIRE key seconds`, `TTL key`.
 
-Commands and replies use RESP framing. The parser buffers partial TCP requests and can process multiple requests received together. Simple inline commands are also accepted for the original `PING` demo.
+Internal AOF forms: `SET … PXAT`, `PEXPIREAT` (absolute deadlines so downtime counts against TTL).
 
-## Design
-
-- **TCP:** Node's `net` sockets expose a byte stream; server code cannot assume one `data` event equals one command.
-- **RESP:** `src/resp.ts` incrementally recognizes arrays of bulk strings and encodes bulk-string replies.
-- **Storage:** `src/store.ts` combines a `Map` with a doubly linked recency list. Reads update recency, making LRU lookup/update O(1).
-- **Memory cap:** `MAXMEMORY_MB` uses an approximate accounting formula (UTF-8 key bytes + value bytes + 64 bytes of per-entry overhead). The least-recently-used entries are evicted when necessary.
-- **TTL:** Reads check expiration lazily. A background timer also samples keys and removes expired entries that are never read.
-- **AOF:** Mutating commands are queued as RESP records. For `everysec` / `no`, a persistent file stream batches nearby records (up to 64 KiB or `AOF_BATCH_MS`). Startup replays the file. Expiring writes are stored with absolute deadlines, so time spent offline counts against TTL.
-- **Durability (`APPENDFSYNC`):** when the client gets its reply vs what a crash can lose:
-
-  | Mode | Client reply timing | On a hard crash you can lose |
-  | --- | --- | --- |
-  | `always` | After the record is `write`n **and** `fsync`ed | Essentially only an in-flight command that had not replied yet |
-  | `everysec` (default) | As soon as the record is **queued** for the batcher (before disk write/fsync) | Roughly the last ~1 second of acknowledged writes (queue + OS buffer since last fsync), plus any batch not yet flushed |
-  | `no` | Same as `everysec` (queued before disk write) | Whatever the OS has not flushed — often more than one second; no periodic `fsync` |
-
-  Normal Ctrl+C drains the writer queue (and fsyncs on shutdown for `always` / `everysec`).
-- **Execution:** Commands are serialized through one queue, preserving mutation and AOF order, similar to Redis's single-command-at-a-time execution model.
+RESP arrays of bulk strings are the normal path; partial TCP chunks and pipelined commands in one chunk are supported. Simple inline commands (e.g. `PING\r\n`) are also accepted.
 
 ## Try it
 
@@ -57,21 +62,64 @@ redis-cli -h 127.0.0.1 -p 6379 SET short-lived yes EX 5
 redis-cli -h 127.0.0.1 -p 6379 TTL short-lived
 ```
 
-Restart the server and read `name` again to see AOF replay.
+Restart the server and `GET name` again to confirm AOF replay.
+
+## Test
+
+```sh
+npm test
+```
+
+Uses Node’s built-in test runner via `tsx` (`test/*.test.ts`): RESP parser, store/LRU/TTL, AOF replay, and TCP integration on an ephemeral port.
 
 ## Benchmark
 
-Measured locally on a Windows host with Node.js 24.14.1 for Mini Redis and Redis 8.10.3 compiled from official Redis source by the [redis-windows project](https://github.com/redis-windows/redis-windows/releases/tag/8.10.3). The same Redis 8.10.3 `redis-benchmark` client ran over loopback using `-n 20000 -c 10 -d 32 -r 1000`. Results below are SET-only tests; before and Redis each had three runs, and the optimized build had five. Each cell shows the median throughput and median p99 latency.
+Use the project load tool (same client against Mini Redis and real Redis). Details: [bench/README.md](bench/README.md).
 
-| Server/configuration | SET throughput | SET p99 |
-| --- | ---: | ---: |
-| Mini Redis before batching (AOF append awaited) | 2,577 ops/s | 7.935 ms |
-| Mini Redis after batching (AOF record queued before reply) | 13,184 ops/s | 1.687 ms |
-| Redis AOF off | 30,166 ops/s | 0.943 ms |
-| Redis AOF `everysec` | 25,094 ops/s | 1.031 ms |
+```sh
+# terminal 1
+APPENDFSYNC=everysec npm start
 
-Batching improved Mini Redis SET throughput about 5.1× and reduced p99 latency about 79% compared with its earlier version on this machine. Those Mini Redis numbers were measured under reply-as-soon-as-queued behavior (no per-command `fsync`), which matches today's `everysec` / `no` reply timing — not `APPENDFSYNC=always`. Re-run benchmarks after changing `APPENDFSYNC` before comparing. The Redis Windows binary is an unofficial Windows build of Redis source, not the official Linux distribution, so treat these as a local learning comparison, not portable performance claims. `redis-benchmark` warned that Mini Redis does not implement `CONFIG`; the measured SET requests completed.
+# terminal 2 — fill in labels/notes for the config you actually ran
+npm run bench -- --connections 10 --requests 20000 --pipeline 1 --mix set --value-bytes 32 --keyspace 1000 --label mini-redis-everysec --notes "APPENDFSYNC=everysec"
+
+pip install matplotlib
+python bench/plot.py
+```
+
+Charts are written to `docs/bench-latency.png` and `docs/bench-throughput.png` from `bench/results.csv`.
+
+### Results table (fill from real runs only)
+
+Do **not** invent numbers. After you run `npm run bench`, copy ops/sec and p99 from the console or `bench/results.csv` into the placeholders below. Prefer the same machine, OS (WSL2/Linux recommended), connection/request/pipeline/value settings, and a noted AOF/`APPENDFSYNC` policy for each row.
+
+| Server / configuration | SET throughput | SET p99 | Notes |
+| --- | ---: | ---: | --- |
+| Mini Redis `APPENDFSYNC=everysec` | _TBD_ | _TBD_ | _date, Node version, OS_ |
+| Mini Redis `APPENDFSYNC=always` | _TBD_ | _TBD_ | |
+| Mini Redis `APPENDFSYNC=no` | _TBD_ | _TBD_ | |
+| Redis `appendfsync everysec` | _TBD_ | _TBD_ | _Redis version_ |
+| Redis AOF off | _TBD_ | _TBD_ | |
+
+Suggested comparable flags: `--connections 10 --requests 20000 --pipeline 1 --mix set --value-bytes 32 --keyspace 1000`.
+
+## Design (short)
+
+- **Store:** `Map` + doubly linked list → O(1) LRU get/set/evict; approximate `MAXMEMORY_MB`.
+- **TTL:** lazy expiry on access + active expiry sampling a **TTL-only** index (time-budgeted, Redis-style).
+- **AOF:** batched RESP log; `APPENDFSYNC` controls reply-vs-disk timing (see table in [docs/architecture.md](docs/architecture.md)).
+- **Execution:** one global command queue for mutation/AOF order.
 
 ## Current limits
 
-This is a teaching clone, not a production Redis replacement. It supports a focused command set, has approximate rather than RSS-based memory accounting, and does not implement authentication, transactions, replication, RDB snapshots, full Redis protocol edge cases, or automatic AOF compaction. A corrupted/incomplete tail record stops replay at that point.
+Teaching clone, not production Redis. Notably:
+
+- Single-threaded command execution
+- Limited string command set (no lists/hashes, `MULTI`, pub/sub, replication, RDB, …)
+- No AOF rewrite/compaction
+- LRU eviction is **not** written to AOF (evicted keys can return after restart)
+- Approximate memory accounting (not RSS)
+- Truncated/corrupt AOF tail stops replay at that point
+- No auth / TLS
+
+See [docs/architecture.md](docs/architecture.md) for the full limitations list.
