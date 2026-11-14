@@ -170,10 +170,11 @@ export class Store {
   }
 
   private unlink(node: LruNode): void {
+    // older===undefined means this node is the LRU tail; newer===undefined means MRU head.
     if (node.older) node.older.newer = node.newer;
-    else this.newest = node.newer;
+    else this.oldest = node.newer;
     if (node.newer) node.newer.older = node.older;
-    else this.oldest = node.older;
+    else this.newest = node.older;
     node.newer = undefined;
     node.older = undefined;
   }
