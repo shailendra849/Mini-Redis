@@ -11,7 +11,7 @@ const AOF_HIGH_WATER_BYTES = 8 * 1024 * 1024;
 const AOF_LOW_WATER_BYTES = 1024 * 1024;
 
 const store = new Store(config.maxMemoryBytes);
-const aofWriter = new AofWriter(config.aofPath, config.aofBatchMs);
+const aofWriter = new AofWriter(config.aofPath, config.aofBatchMs, config.appendFsync);
 let aofFailed = false;
 
 // Redis executes commands one at a time; this also preserves AOF ordering.
@@ -53,7 +53,7 @@ const server = net.createServer((socket) => {
         socket.write(encodeError(parsed.message));
         continue;
       }
-      commandQueue = commandQueue.then(() => {
+      commandQueue = commandQueue.then(async () => {
         if (socket.destroyed) return;
         if (aofFailed) {
           socket.write(encodeError("AOF writer failed"));
@@ -63,16 +63,18 @@ const server = net.createServer((socket) => {
         if (result.persistedArgs) {
           const write = aofWriter.append(encodeArray(result.persistedArgs));
           if (aofWriter.queuedBytes >= AOF_HIGH_WATER_BYTES) socket.pause();
-          void write.then(() => {
+          const settled = write.then(() => {
             if (!socket.destroyed && aofWriter.queuedBytes < AOF_LOW_WATER_BYTES) socket.resume();
           }).catch((cause: unknown) => {
             aofFailed = true;
             console.error("AOF write failed:", cause);
             server.close();
+            throw cause;
           });
+          // always: wait until write + fsync finish. everysec/no: reply as soon as queued.
+          if (config.appendFsync === "always") await settled;
+          else void settled;
         }
-        // Replies are sent once the AOF writer has accepted the record into
-        // its bounded-in-practice batch queue, not after the disk write ends.
         socket.write(result.response);
       }).catch((cause: unknown) => {
         console.error("Command processing error:", cause);
@@ -99,6 +101,8 @@ export async function start(): Promise<void> {
   setInterval(() => store.activeExpire(), 1000).unref();
   server.listen(config.port, config.host, () => {
     console.log(`Mini Redis listening on ${config.host}:${config.port}`);
-    console.log(`AOF: ${config.aofPath} | maxmemory: ${config.maxMemoryMb} MB`);
+    console.log(
+      `AOF: ${config.aofPath} | appendfsync: ${config.appendFsync} | maxmemory: ${config.maxMemoryMb} MB`,
+    );
   });
 }

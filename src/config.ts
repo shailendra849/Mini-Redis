@@ -8,7 +8,7 @@ function readAppendFsync(raw: string | undefined): AppendFsync {
   return "everysec";
 }
 
-/** Central place for env-based settings. APPENDFSYNC is read now; Step 3 wires it into AOF. */
+/** Central place for env-based settings. */
 export const config = {
   host: process.env.HOST ?? "127.0.0.1",
   port: Number(process.env.PORT ?? 6379),
