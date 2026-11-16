@@ -117,6 +117,7 @@ describe("Store", () => {
     store.set("keep", "1");
     const result = execute(["DEL", "nope"], store);
     assert.equal(result.response.toString("utf8"), ":0\r\n");
+    assert.equal(result.persistedRecords, undefined);
     assert.equal(store.get("keep"), "1");
     assert.equal(store.size, 1);
   });

@@ -63,7 +63,11 @@ const del: CommandHandler = (params, store) => {
   if (params.length < 1) return { response: encodeError("usage: DEL key [key ...]") };
   let deleted = 0;
   for (const key of params) if (store.delete(key)) deleted += 1;
-  return { response: encodeInteger(deleted), persistedRecords: [["DEL", ...params]] };
+  // No AOF record when nothing changed — avoids noise on DEL of missing keys.
+  return {
+    response: encodeInteger(deleted),
+    persistedRecords: deleted > 0 ? [["DEL", ...params]] : undefined,
+  };
 };
 
 const exists: CommandHandler = (params, store) => {

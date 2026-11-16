@@ -48,6 +48,7 @@ Module map:
 - A doubly linked list stores recency: move a node to the MRU end on access (`touch`), evict from the LRU end when over `maxmemory`.
 - Together, **lookup, refresh, and eviction are O(1)** — unlike scanning an array by timestamp.
 - Trade-off: extra pointers per entry and careful `unlink` logic (head/tail are easy to get wrong). Memory accounting is still approximate (key/value UTF-8 bytes + fixed overhead), not RSS.
+- **EXISTS / TTL also call `touch`.** That matches “any access refreshes recency” in this codebase, but it is stronger than a pure “value read” model: metadata-only commands can protect a key from LRU eviction. Redis idle-time rules vary by version/policy; treat this as a documented Mini Redis simplification, not a byte-for-byte Redis clone.
 
 ### Why lazy + active expiry?
 

@@ -107,8 +107,9 @@ Suggested comparable flags: `--connections 10 --requests 20000 --pipeline 1 --mi
 
 - **Store:** `Map` + doubly linked list → O(1) LRU get/set/evict; approximate `MAXMEMORY_MB`.
 - **TTL:** lazy expiry on access + active expiry sampling a **TTL-only** index (time-budgeted, Redis-style).
-- **AOF:** batched RESP log; `APPENDFSYNC` controls reply-vs-disk timing (see table in [docs/architecture.md](docs/architecture.md)).
+- **AOF:** batched RESP log; `APPENDFSYNC` controls reply-vs-disk timing (see table in [docs/architecture.md](docs/architecture.md)). `DEL` is written to the AOF only when at least one key was actually removed.
 - **Execution:** one global command queue for mutation/AOF order.
+- **LRU touch on EXISTS/TTL (documented difference):** In this server, `EXISTS` and `TTL` go through `liveNode` + `touch`, so they refresh LRU recency like a read. Redis eviction “idle time” is updated on reads for some policies, but treating `EXISTS`/`TTL` as a full recency refresh is a Mini Redis simplification — they can keep a key from being the eviction victim even though the client only inspected metadata. Behavior is intentional and unchanged; just be aware when comparing to Redis.
 
 ## Current limits
 
