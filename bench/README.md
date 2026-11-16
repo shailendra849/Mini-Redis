@@ -1,153 +1,186 @@
-# Mini Redis benchmarks
+# Mini Redis benchmarks (methodology v2)
 
-`load.ts` is a small RESP load generator that uses raw TCP sockets (no `redis-benchmark` required). It records per-request latency, prints p50/p95/p99 and ops/sec, and **appends** one row to `bench/results.csv`.
+`load.ts` is a raw-TCP RESP load generator. It:
 
-Do not invent numbers. Run the tool yourself, then plot.
+1. Optionally **keyspace-warms** (SET all keys) for `get` / `mixed`
+2. Always runs a **JIT warmup** (default **5,000 untimed** requests) for **every** mix
+3. Then runs the **timed** load (default **200,000** requests)
+4. Appends one CSV row with ops/sec and p50/p95/p99
 
-## Prerequisites
+Do **not** invent numbers. Run on WSL2/Linux, then plot / fill README.
 
-- Node.js 20+ (same major on every comparison if you can)
-- This repo installed (`npm install`)
-- For fair Redis comparisons: **prefer WSL2 or Linux on the same machine**. Windows loopback + an unofficial Redis Windows build is fine for learning, but not for portable claims.
-
-## Start Mini Redis
-
-```sh
-# from repo root — note the AOF policy you are measuring
-APPENDFSYNC=everysec npm start
-```
-
-PowerShell:
-
-```powershell
-$env:APPENDFSYNC='everysec'
-npm start
-```
-
-Use a dedicated AOF file for benches if you like (`AOF_FILE=bench.aof`) so you do not mix with dev data.
-
-## Run the load generator
+## Prerequisites (WSL2)
 
 ```sh
-# SET-only, 10 clients, 20k requests, pipeline 1 (matches common redis-benchmark shape)
-npm run bench -- --connections 10 --requests 20000 --pipeline 1 --mix set --value-bytes 32 --keyspace 1000 --label mini-redis-everysec --notes "APPENDFSYNC=everysec"
+# Node + Redis (once)
+sudo apt-get update
+sudo apt-get install -y nodejs npm redis-server redis-tools
+node -v && redis-server --version && redis-benchmark -h
 
-# GET-only (warms keys with SET first unless --no-warmup)
-npm run bench -- --mix get --label mini-redis-get --notes "APPENDFSYNC=everysec"
-
-# 50/50 SET/GET
-npm run bench -- --mix mixed --pipeline 8 --label mini-redis-mixed-p8
+cd "/mnt/d/Downloads/Mini Redis"   # or your clone path
+npm install
+npm test                           # must pass before benchmarking
 ```
 
-### Useful flags
+## Exact commands — WSL2
 
-| Flag | Meaning |
-| --- | --- |
-| `--connections` | Parallel TCP clients |
-| `--requests` | Total timed commands |
-| `--pipeline` | Commands written before reading that many replies |
-| `--mix` | `set`, `get`, or `mixed` (alternating SET/GET) |
-| `--keyspace` | Distinct keys `k:0` … `k:N-1` |
-| `--value-bytes` | SET payload size |
-| `--label` | CSV label (what you will see on charts) |
-| `--notes` | Free text (record `APPENDFSYNC`, OS, Redis version, …) |
-| `--host` / `--port` | Target (default `127.0.0.1:6379`) |
+Use **two terminals**. Prefer Mini Redis on **6380** and Redis on **6379**.
 
-## Compare against real Redis
-
-1. Start Redis on the **same machine** with a known AOF setting, e.g. `appendonly yes` and `appendfsync everysec` (or AOF off — see command sheet below).
-2. Point the same load tool at it (same flags as Mini Redis rows).
-3. Keep **connections, requests, pipeline, mix, keyspace, value-bytes** identical across rows you plan to compare.
-4. Prefer several runs; the CSV keeps every run so you can see variance.
-
-`redis-benchmark` is optional. Using **this** tool against both servers removes client differences.
-
-## WSL2 / Linux command sheet (fill numbers yourself)
-
-Shared load flags (keep identical across all rows you compare):
+### Shared flags (keep identical when comparing)
 
 ```sh
-BENCH='npm run bench -- --host 127.0.0.1 --connections 10 --requests 20000 --pipeline 1 --mix set --value-bytes 32 --keyspace 1000'
+cd "/mnt/d/Downloads/Mini Redis"
+export PATH="/usr/bin:$PATH"
+
+# Our load client
+BENCH='npx tsx bench/load.ts --host 127.0.0.1 --requests 200000 --mix set --value-bytes 32 --keyspace 1000 --jit-warmup 5000'
 ```
 
-Use Mini Redis on **6380** and Redis on **6379** so they do not fight for a port. From the repo root in WSL:
-
-### Mini Redis — `APPENDFSYNC=everysec`
+### A) Full automated suite (5 runs × scenarios + redis-benchmark cross-check)
 
 ```sh
-AOF_FILE=bench-everysec.aof APPENDFSYNC=everysec PORT=6380 npm start
-# other terminal:
-$BENCH --port 6380 --label mini-redis-everysec --notes "APPENDFSYNC=everysec Node=$(node -v) $(uname -s)"
-# Ctrl+C the server when done
+chmod +x bench/run-suite.sh
+bash bench/run-suite.sh
+# prints median/min/max via bench/summarize.py
+# writes bench/results.csv
+# writes bench/run-data/redis-benchmark-crosscheck.txt
 ```
 
-### Mini Redis — `APPENDFSYNC=always`
+Scenarios in the suite:
+
+| Scenario | connections | pipeline | requests | runs |
+| --- | ---: | ---: | ---: | ---: |
+| Baseline | 10 | 1 | 200000 | 5 |
+| Pipeline | 10 | 16 | 200000 | 5 |
+| Connections | 50 | 1 | 200000 | 5 |
+
+Configs: Mini Redis `everysec` / `always` / `no`; Redis `everysec` / AOF off (baseline). Pipeline-16 and c50 only for Mini/Redis `everysec`.
+
+### B) Manual — one Mini Redis config
+
+**Terminal 1 — server**
 
 ```sh
-AOF_FILE=bench-always.aof APPENDFSYNC=always PORT=6380 npm start
-$BENCH --port 6380 --label mini-redis-always --notes "APPENDFSYNC=always Node=$(node -v) $(uname -s)"
+cd "/mnt/d/Downloads/Mini Redis"
+AOF_FILE=bench/run-data/manual-everysec.aof APPENDFSYNC=everysec PORT=6380 HOST=127.0.0.1 npx tsx src/index.ts
 ```
 
-### Mini Redis — `APPENDFSYNC=no`
+**Terminal 2 — load (baseline)**
 
 ```sh
-AOF_FILE=bench-no.aof APPENDFSYNC=no PORT=6380 npm start
-$BENCH --port 6380 --label mini-redis-no --notes "APPENDFSYNC=no Node=$(node -v) $(uname -s)"
+cd "/mnt/d/Downloads/Mini Redis"
+$BENCH --port 6380 --connections 10 --pipeline 1 \
+  --label mini-redis-everysec --notes "APPENDFSYNC=everysec Node=$(node -v) $(uname -srm)"
 ```
 
-### Real Redis — AOF `appendfsync everysec`
+**Pipeline 16**
 
 ```sh
-redis-server --port 6379 --appendonly yes --appendfsync everysec --dir /tmp/redis-bench-everysec --dbfilename dump.rdb
-# other terminal (same $BENCH definition):
-$BENCH --port 6379 --label redis-everysec --notes "Redis appendonly=yes appendfsync=everysec $(redis-server --version)"
+$BENCH --port 6380 --connections 10 --pipeline 16 \
+  --label mini-redis-everysec-p16 --notes "APPENDFSYNC=everysec P=16"
 ```
 
-### Real Redis — AOF off
+**Connections 50**
 
 ```sh
-redis-server --port 6379 --appendonly no --dir /tmp/redis-bench-aofoff --dbfilename dump.rdb
-$BENCH --port 6379 --label redis-aof-off --notes "Redis appendonly=no $(redis-server --version)"
+$BENCH --port 6380 --connections 50 --pipeline 1 \
+  --label mini-redis-everysec-c50 --notes "APPENDFSYNC=everysec c=50"
 ```
 
-Optional mixes (same ports/labels pattern):
+Repeat the same three shapes with `APPENDFSYNC=always` and `APPENDFSYNC=no` (new AOF file each time). For each config, run **5 times** and take **median** (also record min/max).
+
+### C) Manual — real Redis
 
 ```sh
-$BENCH --port 6380 --mix get --label mini-redis-everysec-get --notes "APPENDFSYNC=everysec"
-$BENCH --port 6380 --mix mixed --pipeline 8 --label mini-redis-everysec-mixed-p8 --notes "APPENDFSYNC=everysec pipeline=8"
-# alias: --mix 50/50  is the same as --mix mixed
+# everysec
+mkdir -p /tmp/redis-bench-everysec
+redis-server --port 6379 --bind 127.0.0.1 --protected-mode no \
+  --dir /tmp/redis-bench-everysec --dbfilename dump.rdb \
+  --appendonly yes --appendfsync everysec --save ""
+
+$BENCH --port 6379 --connections 10 --pipeline 1 \
+  --label redis-everysec --notes "Redis $(redis-server --version)"
 ```
 
-Then plot (after real rows exist in `bench/results.csv`):
+```sh
+# AOF off
+mkdir -p /tmp/redis-bench-aofoff
+redis-server --port 6379 --bind 127.0.0.1 --protected-mode no \
+  --dir /tmp/redis-bench-aofoff --dbfilename dump.rdb \
+  --appendonly no --save ""
+
+$BENCH --port 6379 --connections 10 --pipeline 1 \
+  --label redis-aof-off --notes "Redis appendonly=no"
+```
+
+### D) Official `redis-benchmark` cross-check (same -c/-n/-P/-d/-r)
+
+Against Mini Redis (server already on 6380):
 
 ```sh
-pip install matplotlib
+redis-benchmark -h 127.0.0.1 -p 6380 -c 10 -n 200000 -P 1  -d 32 -r 1000 -t set --csv
+redis-benchmark -h 127.0.0.1 -p 6380 -c 10 -n 200000 -P 16 -d 32 -r 1000 -t set --csv
+redis-benchmark -h 127.0.0.1 -p 6380 -c 50 -n 200000 -P 1  -d 32 -r 1000 -t set --csv
+```
+
+Against real Redis (server on 6379):
+
+```sh
+redis-benchmark -h 127.0.0.1 -p 6379 -c 10 -n 200000 -P 1  -d 32 -r 1000 -t set --csv
+redis-benchmark -h 127.0.0.1 -p 6379 -c 10 -n 200000 -P 16 -d 32 -r 1000 -t set --csv
+redis-benchmark -h 127.0.0.1 -p 6379 -c 50 -n 200000 -P 1  -d 32 -r 1000 -t set --csv
+```
+
+Compare directionally with `bench/load.ts` (different clients → absolute numbers may differ; relative ranking should be sane).
+
+### Summarize + plot
+
+```sh
+python3 bench/summarize.py bench/results.csv
+pip install matplotlib   # once
 python3 bench/plot.py
 ```
 
-Copy ops/sec and p99 from the console or CSV into the README `_TBD_` table — never invent numbers.
+## Confirm the client is not the bottleneck
 
-## Plot charts
+While a timed run is in progress, open a **third** WSL terminal:
 
 ```sh
-# once: Python 3 + matplotlib
-pip install matplotlib
-
-python bench/plot.py
-# optional: python bench/plot.py path/to/other.csv
+# Watch Node load client + server CPU
+top -d 1
+# or narrower:
+top -d 1 -p $(pgrep -d',' -f 'tsx bench/load|tsx src/index|redis-server|redis-benchmark')
 ```
 
-Writes (overwrites):
+How to read it:
 
-- `docs/bench-latency.png` — p50 / p95 / p99 by label
-- `docs/bench-throughput.png` — ops/sec by label
+| What you see | Meaning |
+| --- | --- |
+| `tsx bench/load` (or `redis-benchmark`) stuck near **100% of one core**, server lower | Client may be the limit — try more connections / pipeline, or accept client-bound results |
+| Server (`tsx src/index` or `redis-server`) high CPU, client lower | Server-bound — good for comparing servers |
+| Both moderate, low overall | I/O / fsync bound (especially `APPENDFSYNC=always`) — also informative |
 
-If `bench/results.csv` has only a header (no runs yet), the script exits with a clear message and does not invent points.
+Also useful:
 
-## CSV format
+```sh
+# One-shot sample
+ps -eo pid,pcpu,pmem,cmd --sort=-pcpu | head -20
+```
 
-`bench/results.csv` columns:
+If the load client is pegged at ~100% of a single core while the server has free CPU, numbers understate the server. Prefer server-bound conditions when claiming Mini Redis vs Redis throughput.
+
+## Flags reference
+
+| Flag | Meaning |
+| --- | --- |
+| `--connections` | Parallel TCP clients (default 10; scenario: 50) |
+| `--requests` | Timed commands (default **200000**) |
+| `--pipeline` | Write N before reading N replies (default 1; scenario: 16) |
+| `--jit-warmup` | Untimed requests before timing (default **5000**, all mixes) |
+| `--no-jit-warmup` | Skip JIT warmup |
+| `--no-warmup` | Skip keyspace SETs for get/mixed |
+| `--mix` | `set`, `get`, `mixed` / `50/50` |
+
+## CSV
 
 `timestamp,label,host,port,connections,requests,pipeline,mix,keyspace,value_bytes,ops_per_sec,p50_ms,p95_ms,p99_ms,notes`
-
-The file is created automatically on the first successful run.

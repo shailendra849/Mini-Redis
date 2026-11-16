@@ -2,7 +2,7 @@
  * Raw-socket load generator for Mini Redis (and any RESP server including Redis).
  *
  * Example:
- *   npm run bench -- --connections 10 --requests 20000 --pipeline 1 --mix set
+ *   npm run bench -- --connections 10 --requests 200000 --pipeline 1 --mix set
  */
 import { access, appendFile, writeFile } from "node:fs/promises";
 import net from "node:net";
@@ -23,7 +23,10 @@ type Options = {
   valueBytes: number;
   label: string;
   notes: string;
-  warmup: boolean;
+  /** Pre-SET the keyspace for get/mixed so GETs hit existing keys. */
+  keyWarmup: boolean;
+  /** Untimed requests before the timed run (JIT / connection steady-state). */
+  jitWarmupRequests: number;
   csvPath: string;
 };
 
@@ -33,14 +36,16 @@ function usage(): never {
 Options:
   --host <addr>          default 127.0.0.1
   --port <n>             default 6379
-  --connections <n>      parallel TCP clients (default 10)
-  --requests <n>         total commands in the timed run (default 20000)
-  --pipeline <n>         commands written before reading replies (default 1)
+  --connections <n>      parallel TCP clients (default 10; try 50)
+  --requests <n>         total commands in the timed run (default 200000)
+  --pipeline <n>         commands written before reading replies (default 1; try 16)
   --mix set|get|mixed    command mix (default set; mixed = 50/50; alias: 50/50)
   --keyspace <n>         distinct keys (default 1000)
   --value-bytes <n>      SET value size (default 32)
   --label <name>         row label in CSV (default mini-redis)
   --notes <text>         free-form CSV note (e.g. APPENDFSYNC=everysec)
+  --jit-warmup <n>       untimed requests before timing (default 5000; all mixes)
+  --no-jit-warmup        skip JIT warmup
   --no-warmup            skip pre-SETting keys for get/mixed
   --csv <path>           results file (default bench/results.csv)
 `);
@@ -84,18 +89,22 @@ function parseOptions(): Options {
         process.exit(1);
       })();
   const benchDir = path.dirname(fileURLToPath(import.meta.url));
+  const jitWarmupRequests = flag("no-jit-warmup")
+    ? 0
+    : Math.max(0, optInt("jit-warmup", 5_000));
   return {
     host: opt("host", "127.0.0.1"),
     port: optInt("port", 6379),
     connections: Math.max(1, optInt("connections", 10)),
-    requests: Math.max(1, optInt("requests", 20_000)),
+    requests: Math.max(1, optInt("requests", 200_000)),
     pipeline: Math.max(1, optInt("pipeline", 1)),
     mix,
     keyspace: Math.max(1, optInt("keyspace", 1000)),
     valueBytes: Math.max(1, optInt("value-bytes", 32)),
     label: opt("label", "mini-redis"),
     notes: opt("notes", ""),
-    warmup: !flag("no-warmup"),
+    keyWarmup: !flag("no-warmup"),
+    jitWarmupRequests,
     csvPath: path.resolve(opt("csv", path.join(benchDir, "results.csv"))),
   };
 }
@@ -218,8 +227,10 @@ function buildCommand(mix: Mix, keyspace: number, value: string, index: number):
     : encodeArray(["GET", key]);
 }
 
-async function warmup(options: Options, value: string): Promise<void> {
-  if (!options.warmup || options.mix === "set") return;
+/** Ensure GET/mixed hit existing keys (data warmup — not timed). */
+async function keyspaceWarmup(options: Options, value: string): Promise<void> {
+  if (!options.keyWarmup || options.mix === "set") return;
+  console.log(`Keyspace warmup: SETting ${options.keyspace} keys...`);
   const session = await openSession(options.host, options.port);
   const pipeline = Math.max(options.pipeline, 16);
   for (let offset = 0; offset < options.keyspace; ) {
@@ -237,7 +248,7 @@ async function runWorker(
   options: Options,
   value: string,
   claim: () => number,
-  latenciesMs: number[],
+  latenciesMs: number[] | null,
 ): Promise<number> {
   const session = await openSession(options.host, options.port);
   let completed = 0;
@@ -249,20 +260,58 @@ async function runWorker(
 
     const sentAt: number[] = [];
     for (let i = 0; i < batch; i += 1) {
-      sentAt.push(performance.now());
+      if (latenciesMs) sentAt.push(performance.now());
       session.socket.write(buildCommand(options.mix, options.keyspace, value, seq));
       seq += 1;
     }
 
     for (let i = 0; i < batch; i += 1) {
       await session.reader.readOne();
-      latenciesMs.push(performance.now() - sentAt[i]!);
+      if (latenciesMs) latenciesMs.push(performance.now() - sentAt[i]!);
       completed += 1;
     }
   }
 
   await session.close();
   return completed;
+}
+
+async function runLoad(
+  options: Options,
+  value: string,
+  totalRequests: number,
+  recordLatency: boolean,
+): Promise<{ completed: number; elapsedMs: number; latenciesMs: number[] }> {
+  let remaining = totalRequests;
+  const claim = (): number => {
+    if (remaining <= 0) return 0;
+    const take = Math.min(options.pipeline, remaining);
+    remaining -= take;
+    return take;
+  };
+
+  const latenciesMs = recordLatency ? [] : null;
+  const started = performance.now();
+  const workers = Array.from({ length: options.connections }, () =>
+    runWorker(options, value, claim, latenciesMs),
+  );
+  const counts = await Promise.all(workers);
+  const elapsedMs = performance.now() - started;
+  const completed = counts.reduce((sum, n) => sum + n, 0);
+  if (completed !== totalRequests) {
+    throw new Error(`expected ${totalRequests} completions, got ${completed}`);
+  }
+  return { completed, elapsedMs, latenciesMs: latenciesMs ?? [] };
+}
+
+/** Untimed traffic so V8/JIT and sockets reach steady state (all mixes). */
+async function jitWarmup(options: Options, value: string): Promise<void> {
+  if (options.jitWarmupRequests <= 0) return;
+  console.log(
+    `JIT warmup: ${options.jitWarmupRequests} untimed requests ` +
+      `(connections=${options.connections} pipeline=${options.pipeline})...`,
+  );
+  await runLoad(options, value, options.jitWarmupRequests, false);
 }
 
 async function ensureCsvHeader(csvPath: string): Promise<void> {
@@ -328,31 +377,20 @@ async function main(): Promise<void> {
 
   console.log(
     `Benchmark target ${options.host}:${options.port} | connections=${options.connections} ` +
-      `requests=${options.requests} pipeline=${options.pipeline} mix=${options.mix}`,
+      `requests=${options.requests} pipeline=${options.pipeline} mix=${options.mix} ` +
+      `jit_warmup=${options.jitWarmupRequests}`,
   );
 
-  await warmup(options, value);
+  await keyspaceWarmup(options, value);
+  await jitWarmup(options, value);
 
-  let remaining = options.requests;
-  const claim = (): number => {
-    if (remaining <= 0) return 0;
-    const take = Math.min(options.pipeline, remaining);
-    remaining -= take;
-    return take;
-  };
-
-  const latenciesMs: number[] = [];
-  const started = performance.now();
-  const workers = Array.from({ length: options.connections }, () =>
-    runWorker(options, value, claim, latenciesMs),
+  console.log("Timed run starting...");
+  const { completed, elapsedMs, latenciesMs } = await runLoad(
+    options,
+    value,
+    options.requests,
+    true,
   );
-  const counts = await Promise.all(workers);
-  const elapsedMs = performance.now() - started;
-  const completed = counts.reduce((sum, n) => sum + n, 0);
-
-  if (completed !== options.requests) {
-    throw new Error(`expected ${options.requests} completions, got ${completed}`);
-  }
 
   latenciesMs.sort((a, b) => a - b);
   const opsPerSec = completed / (elapsedMs / 1000);

@@ -74,38 +74,52 @@ Uses Node’s built-in test runner via `tsx` (`test/*.test.ts`): RESP parser, st
 
 ## Benchmark
 
-Use the project load tool (same client against Mini Redis and real Redis). Details: [bench/README.md](bench/README.md).
+Same load client against Mini Redis and real Redis. Full WSL2 command sheet (including `redis-benchmark` cross-check and `top` bottleneck check): [bench/README.md](bench/README.md).
+
+**Methodology v2** (current tooling):
+
+- JIT warmup: **5,000 untimed** requests (all mixes) before timing
+- Timed run default: **200,000** requests
+- Scenarios: `--connections 10 --pipeline 1`, also `--pipeline 16`, `--connections 50`
+- **5 runs** per config → report **median** and **min/max** (`python3 bench/summarize.py`)
+- Cross-check with official `redis-benchmark` (`-c` / `-n` / `-P` / `-d` / `-r`)
 
 ```sh
-# terminal 1
-APPENDFSYNC=everysec npm start
+# WSL2 — automated suite
+bash bench/run-suite.sh
 
-# terminal 2 — fill in labels/notes for the config you actually ran
-npm run bench -- --connections 10 --requests 20000 --pipeline 1 --mix set --value-bytes 32 --keyspace 1000 --label mini-redis-everysec --notes "APPENDFSYNC=everysec"
-
-pip install matplotlib
-python bench/plot.py
+# or one-shot
+npm run bench -- --connections 10 --requests 200000 --pipeline 1 --mix set \
+  --jit-warmup 5000 --label mini-redis-everysec --notes "APPENDFSYNC=everysec"
 ```
 
-Charts are written to `docs/bench-latency.png` and `docs/bench-throughput.png` from `bench/results.csv`.
+### Results table (methodology v2 — fill after you re-run)
 
-### Results (measured — median of 3 runs)
+Do **not** invent numbers. After `bash bench/run-suite.sh`, copy median ops/sec and p99 from `bench/summarize.py` / `bench/results.csv`.
 
-**Environment:** 2026-11-16 · WSL2 Ubuntu (Linux 6.18.33.1-microsoft-standard-WSL2 x86_64) · Node.js v22.22.1 · Redis server 8.0.5 · same load client (`bench/load.ts`) for every row.
+| Server / configuration | SET throughput (median) | SET p99 (median) | min–max ops/s | Notes |
+| --- | ---: | ---: | --- | --- |
+| Mini Redis `APPENDFSYNC=everysec` (c10/P1) | _TBD_ | _TBD_ | _TBD_ | date, Node, OS |
+| Mini Redis `APPENDFSYNC=always` (c10/P1) | _TBD_ | _TBD_ | _TBD_ | |
+| Mini Redis `APPENDFSYNC=no` (c10/P1) | _TBD_ | _TBD_ | _TBD_ | |
+| Redis `appendfsync everysec` (c10/P1) | _TBD_ | _TBD_ | _TBD_ | Redis version |
+| Redis AOF off (c10/P1) | _TBD_ | _TBD_ | _TBD_ | |
+| Mini Redis everysec (P16) | _TBD_ | _TBD_ | _TBD_ | |
+| Redis everysec (P16) | _TBD_ | _TBD_ | _TBD_ | |
+| Mini Redis everysec (c50) | _TBD_ | _TBD_ | _TBD_ | |
+| Redis everysec (c50) | _TBD_ | _TBD_ | _TBD_ | |
 
-**Load flags (identical for all rows):** `--connections 10 --requests 20000 --pipeline 1 --mix set --value-bytes 32 --keyspace 1000`
+### Archive — methodology v1 (do not use for new claims)
 
-Raw runs: [`bench/results.csv`](bench/results.csv). Suite script: `bench/run-suite.sh`.
+Measured 2026-11-16 on WSL2 · Node v22.22.1 · Redis 8.0.5 · **no JIT warmup** · **20,000** requests · **3** runs · c10/P1 only. Kept only as history:
 
-| Server / configuration | SET throughput (median) | SET p99 (median) | Notes |
-| --- | ---: | ---: | --- |
-| Mini Redis `APPENDFSYNC=everysec` | 10,707 ops/s | 8.184 ms | 3 runs: 6.3k / 10.7k / 18.3k ops/s |
-| Mini Redis `APPENDFSYNC=always` | 184 ops/s | 89.591 ms | fsync before every reply |
-| Mini Redis `APPENDFSYNC=no` | 19,416 ops/s | 3.705 ms | no periodic fsync |
-| Redis `appendfsync everysec` | 12,031 ops/s | 3.502 ms | Redis 8.0.5 |
-| Redis AOF off | 12,948 ops/s | 3.507 ms | `appendonly no` |
-
-These are loopback learning numbers on one machine, not portable claims. Prefer quoting **everysec** (default durability) when summarizing on a resume, and mention the shared client + median-of-3 method.
+| Server / configuration | SET throughput (median) | SET p99 (median) |
+| --- | ---: | ---: |
+| Mini Redis `APPENDFSYNC=everysec` | 10,707 ops/s | 8.184 ms |
+| Mini Redis `APPENDFSYNC=always` | 184 ops/s | 89.591 ms |
+| Mini Redis `APPENDFSYNC=no` | 19,416 ops/s | 3.705 ms |
+| Redis `appendfsync everysec` | 12,031 ops/s | 3.502 ms |
+| Redis AOF off | 12,948 ops/s | 3.507 ms |
 
 ## Design (short)
 
