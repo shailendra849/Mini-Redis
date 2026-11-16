@@ -55,17 +55,77 @@ npm run bench -- --mix mixed --pipeline 8 --label mini-redis-mixed-p8
 
 ## Compare against real Redis
 
-1. Start Redis on the **same machine** with a known AOF setting, e.g. `appendonly yes` and `appendfsync everysec` (or `no` / `always` — match Mini Redis for that run).
-2. Point the same load tool at it:
-
-```sh
-npm run bench -- --port 6379 --mix set --connections 10 --requests 20000 --pipeline 1 --label redis-everysec --notes "Redis appendfsync everysec"
-```
-
+1. Start Redis on the **same machine** with a known AOF setting, e.g. `appendonly yes` and `appendfsync everysec` (or AOF off — see command sheet below).
+2. Point the same load tool at it (same flags as Mini Redis rows).
 3. Keep **connections, requests, pipeline, mix, keyspace, value-bytes** identical across rows you plan to compare.
 4. Prefer several runs; the CSV keeps every run so you can see variance.
 
 `redis-benchmark` is optional. Using **this** tool against both servers removes client differences.
+
+## WSL2 / Linux command sheet (fill numbers yourself)
+
+Shared load flags (keep identical across all rows you compare):
+
+```sh
+BENCH='npm run bench -- --host 127.0.0.1 --connections 10 --requests 20000 --pipeline 1 --mix set --value-bytes 32 --keyspace 1000'
+```
+
+Use Mini Redis on **6380** and Redis on **6379** so they do not fight for a port. From the repo root in WSL:
+
+### Mini Redis — `APPENDFSYNC=everysec`
+
+```sh
+AOF_FILE=bench-everysec.aof APPENDFSYNC=everysec PORT=6380 npm start
+# other terminal:
+$BENCH --port 6380 --label mini-redis-everysec --notes "APPENDFSYNC=everysec Node=$(node -v) $(uname -s)"
+# Ctrl+C the server when done
+```
+
+### Mini Redis — `APPENDFSYNC=always`
+
+```sh
+AOF_FILE=bench-always.aof APPENDFSYNC=always PORT=6380 npm start
+$BENCH --port 6380 --label mini-redis-always --notes "APPENDFSYNC=always Node=$(node -v) $(uname -s)"
+```
+
+### Mini Redis — `APPENDFSYNC=no`
+
+```sh
+AOF_FILE=bench-no.aof APPENDFSYNC=no PORT=6380 npm start
+$BENCH --port 6380 --label mini-redis-no --notes "APPENDFSYNC=no Node=$(node -v) $(uname -s)"
+```
+
+### Real Redis — AOF `appendfsync everysec`
+
+```sh
+redis-server --port 6379 --appendonly yes --appendfsync everysec --dir /tmp/redis-bench-everysec --dbfilename dump.rdb
+# other terminal (same $BENCH definition):
+$BENCH --port 6379 --label redis-everysec --notes "Redis appendonly=yes appendfsync=everysec $(redis-server --version)"
+```
+
+### Real Redis — AOF off
+
+```sh
+redis-server --port 6379 --appendonly no --dir /tmp/redis-bench-aofoff --dbfilename dump.rdb
+$BENCH --port 6379 --label redis-aof-off --notes "Redis appendonly=no $(redis-server --version)"
+```
+
+Optional mixes (same ports/labels pattern):
+
+```sh
+$BENCH --port 6380 --mix get --label mini-redis-everysec-get --notes "APPENDFSYNC=everysec"
+$BENCH --port 6380 --mix mixed --pipeline 8 --label mini-redis-everysec-mixed-p8 --notes "APPENDFSYNC=everysec pipeline=8"
+# alias: --mix 50/50  is the same as --mix mixed
+```
+
+Then plot (after real rows exist in `bench/results.csv`):
+
+```sh
+pip install matplotlib
+python3 bench/plot.py
+```
+
+Copy ops/sec and p99 from the console or CSV into the README `_TBD_` table — never invent numbers.
 
 ## Plot charts
 

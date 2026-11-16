@@ -36,7 +36,7 @@ Options:
   --connections <n>      parallel TCP clients (default 10)
   --requests <n>         total commands in the timed run (default 20000)
   --pipeline <n>         commands written before reading replies (default 1)
-  --mix set|get|mixed    command mix (default set)
+  --mix set|get|mixed    command mix (default set; mixed = 50/50; alias: 50/50)
   --keyspace <n>         distinct keys (default 1000)
   --value-bytes <n>      SET value size (default 32)
   --label <name>         row label in CSV (default mini-redis)
@@ -75,10 +75,14 @@ function optInt(name: string, fallback: number): number {
 function parseOptions(): Options {
   if (flag("help") || flag("h")) usage();
   const mixRaw = opt("mix", "set").toLowerCase();
-  if (mixRaw !== "set" && mixRaw !== "get" && mixRaw !== "mixed") {
-    console.error("--mix must be set, get, or mixed");
-    process.exit(1);
-  }
+  const mix: Mix = mixRaw === "50/50" || mixRaw === "50-50"
+    ? "mixed"
+    : mixRaw === "set" || mixRaw === "get" || mixRaw === "mixed"
+      ? mixRaw
+      : (() => {
+        console.error("--mix must be set, get, mixed, or 50/50");
+        process.exit(1);
+      })();
   const benchDir = path.dirname(fileURLToPath(import.meta.url));
   return {
     host: opt("host", "127.0.0.1"),
@@ -86,7 +90,7 @@ function parseOptions(): Options {
     connections: Math.max(1, optInt("connections", 10)),
     requests: Math.max(1, optInt("requests", 20_000)),
     pipeline: Math.max(1, optInt("pipeline", 1)),
-    mix: mixRaw,
+    mix,
     keyspace: Math.max(1, optInt("keyspace", 1000)),
     valueBytes: Math.max(1, optInt("value-bytes", 32)),
     label: opt("label", "mini-redis"),
@@ -179,13 +183,30 @@ function connect(host: string, port: number): Promise<net.Socket> {
   });
 }
 
-async function openSession(host: string, port: number): Promise<{ socket: net.Socket; reader: ReplyReader }> {
+async function openSession(host: string, port: number): Promise<{
+  socket: net.Socket;
+  reader: ReplyReader;
+  close(): Promise<void>;
+}> {
   const socket = await connect(host, port);
   const reader = new ReplyReader();
+  let intentionalClose = false;
   socket.on("data", (chunk) => reader.push(chunk));
   socket.on("error", (cause) => reader.fail(cause));
-  socket.on("close", () => reader.fail(new Error("connection closed before replies finished")));
-  return { socket, reader };
+  socket.on("close", () => {
+    if (!intentionalClose) reader.fail(new Error("connection closed before replies finished"));
+  });
+  return {
+    socket,
+    reader,
+    close: async () => {
+      intentionalClose = true;
+      if (!socket.destroyed) {
+        socket.end();
+        await new Promise<void>((resolve) => socket.once("close", () => resolve()));
+      }
+    },
+  };
 }
 
 function buildCommand(mix: Mix, keyspace: number, value: string, index: number): Buffer {
@@ -199,18 +220,17 @@ function buildCommand(mix: Mix, keyspace: number, value: string, index: number):
 
 async function warmup(options: Options, value: string): Promise<void> {
   if (!options.warmup || options.mix === "set") return;
-  const { socket, reader } = await openSession(options.host, options.port);
+  const session = await openSession(options.host, options.port);
   const pipeline = Math.max(options.pipeline, 16);
   for (let offset = 0; offset < options.keyspace; ) {
     const batch = Math.min(pipeline, options.keyspace - offset);
     for (let i = 0; i < batch; i += 1) {
-      socket.write(encodeArray(["SET", `k:${offset + i}`, value]));
+      session.socket.write(encodeArray(["SET", `k:${offset + i}`, value]));
     }
-    for (let i = 0; i < batch; i += 1) await reader.readOne();
+    for (let i = 0; i < batch; i += 1) await session.reader.readOne();
     offset += batch;
   }
-  socket.end();
-  await new Promise<void>((resolve) => socket.once("close", () => resolve()));
+  await session.close();
 }
 
 async function runWorker(
@@ -219,7 +239,7 @@ async function runWorker(
   claim: () => number,
   latenciesMs: number[],
 ): Promise<number> {
-  const { socket, reader } = await openSession(options.host, options.port);
+  const session = await openSession(options.host, options.port);
   let completed = 0;
   let seq = 0;
 
@@ -230,19 +250,18 @@ async function runWorker(
     const sentAt: number[] = [];
     for (let i = 0; i < batch; i += 1) {
       sentAt.push(performance.now());
-      socket.write(buildCommand(options.mix, options.keyspace, value, seq));
+      session.socket.write(buildCommand(options.mix, options.keyspace, value, seq));
       seq += 1;
     }
 
     for (let i = 0; i < batch; i += 1) {
-      await reader.readOne();
+      await session.reader.readOne();
       latenciesMs.push(performance.now() - sentAt[i]!);
       completed += 1;
     }
   }
 
-  socket.end();
-  await new Promise<void>((resolve) => socket.once("close", () => resolve()));
+  await session.close();
   return completed;
 }
 
