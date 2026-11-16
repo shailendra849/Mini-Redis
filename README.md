@@ -89,19 +89,23 @@ python bench/plot.py
 
 Charts are written to `docs/bench-latency.png` and `docs/bench-throughput.png` from `bench/results.csv`.
 
-### Results table (fill from real runs only)
+### Results (measured — median of 3 runs)
 
-Do **not** invent numbers. After you run `npm run bench`, copy ops/sec and p99 from the console or `bench/results.csv` into the placeholders below. Prefer the same machine, OS (WSL2/Linux recommended), connection/request/pipeline/value settings, and a noted AOF/`APPENDFSYNC` policy for each row.
+**Environment:** 2026-11-16 · WSL2 Ubuntu (Linux 6.18.33.1-microsoft-standard-WSL2 x86_64) · Node.js v22.22.1 · Redis server 8.0.5 · same load client (`bench/load.ts`) for every row.
 
-| Server / configuration | SET throughput | SET p99 | Notes |
+**Load flags (identical for all rows):** `--connections 10 --requests 20000 --pipeline 1 --mix set --value-bytes 32 --keyspace 1000`
+
+Raw runs: [`bench/results.csv`](bench/results.csv). Suite script: `bench/run-suite.sh`.
+
+| Server / configuration | SET throughput (median) | SET p99 (median) | Notes |
 | --- | ---: | ---: | --- |
-| Mini Redis `APPENDFSYNC=everysec` | _TBD_ | _TBD_ | _date, Node version, OS_ |
-| Mini Redis `APPENDFSYNC=always` | _TBD_ | _TBD_ | |
-| Mini Redis `APPENDFSYNC=no` | _TBD_ | _TBD_ | |
-| Redis `appendfsync everysec` | _TBD_ | _TBD_ | _Redis version_ |
-| Redis AOF off | _TBD_ | _TBD_ | |
+| Mini Redis `APPENDFSYNC=everysec` | 10,707 ops/s | 8.184 ms | 3 runs: 6.3k / 10.7k / 18.3k ops/s |
+| Mini Redis `APPENDFSYNC=always` | 184 ops/s | 89.591 ms | fsync before every reply |
+| Mini Redis `APPENDFSYNC=no` | 19,416 ops/s | 3.705 ms | no periodic fsync |
+| Redis `appendfsync everysec` | 12,031 ops/s | 3.502 ms | Redis 8.0.5 |
+| Redis AOF off | 12,948 ops/s | 3.507 ms | `appendonly no` |
 
-Suggested comparable flags: `--connections 10 --requests 20000 --pipeline 1 --mix set --value-bytes 32 --keyspace 1000`.
+These are loopback learning numbers on one machine, not portable claims. Prefer quoting **everysec** (default durability) when summarizing on a resume, and mention the shared client + median-of-3 method.
 
 ## Design (short)
 

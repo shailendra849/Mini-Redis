@@ -34,19 +34,39 @@ def load_rows(path: Path) -> list[dict[str, str]]:
     return rows
 
 
-def latest_by_label(rows: list[dict[str, str]]) -> list[dict[str, str]]:
-    """Keep the last run for each label so re-runs replace older points on the chart."""
-    chosen: dict[str, dict[str, str]] = {}
+def median(values: list[float]) -> float:
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    if not ordered:
+        return 0.0
+    if len(ordered) % 2 == 1:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2
+
+
+def median_by_label(rows: list[dict[str, str]]) -> list[dict[str, float | str]]:
+    """Aggregate every label to the median of its runs (matches README median-of-3)."""
+    buckets: dict[str, list[dict[str, str]]] = {}
     for row in rows:
         label = row.get("label") or "unnamed"
-        chosen[label] = row
-    return list(chosen.values())
+        buckets.setdefault(label, []).append(row)
+
+    out: list[dict[str, float | str]] = []
+    for label, group in buckets.items():
+        out.append({
+            "label": label,
+            "ops_per_sec": median([float(r["ops_per_sec"]) for r in group]),
+            "p50_ms": median([float(r["p50_ms"]) for r in group]),
+            "p95_ms": median([float(r["p95_ms"]) for r in group]),
+            "p99_ms": median([float(r["p99_ms"]) for r in group]),
+        })
+    return out
 
 
 def main() -> None:
     csv_path = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else CSV_PATH
-    rows = latest_by_label(load_rows(csv_path))
-    labels = [row["label"] for row in rows]
+    rows = median_by_label(load_rows(csv_path))
+    labels = [str(row["label"]) for row in rows]
     p50 = [float(row["p50_ms"]) for row in rows]
     p95 = [float(row["p95_ms"]) for row in rows]
     p99 = [float(row["p99_ms"]) for row in rows]
@@ -62,7 +82,7 @@ def main() -> None:
     ax.bar([i + width for i in x], p99, width, label="p99")
     ax.set_xticks(list(x), labels, rotation=20, ha="right")
     ax.set_ylabel("Latency (ms)")
-    ax.set_title("Benchmark latency (latest run per label)")
+    ax.set_title("Benchmark latency (median per label)")
     ax.legend()
     fig.tight_layout()
     latency_path = DOCS / "bench-latency.png"
@@ -73,7 +93,7 @@ def main() -> None:
     ax.bar(list(x), ops, color="#2a6f97")
     ax.set_xticks(list(x), labels, rotation=20, ha="right")
     ax.set_ylabel("Operations / second")
-    ax.set_title("Benchmark throughput (latest run per label)")
+    ax.set_title("Benchmark throughput (median per label)")
     fig.tight_layout()
     throughput_path = DOCS / "bench-throughput.png"
     fig.savefig(throughput_path, dpi=140)

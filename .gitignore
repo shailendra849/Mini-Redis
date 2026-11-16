@@ -2,3 +2,4 @@ node_modules/
 dist/
 appendonly.aof
 bench/*.aof
+bench/run-data/

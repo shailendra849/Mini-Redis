@@ -1,1 +1,16 @@
 timestamp,label,host,port,connections,requests,pipeline,mix,keyspace,value_bytes,ops_per_sec,p50_ms,p95_ms,p99_ms,notes
+2026-11-16T11:23:11.002Z,mini-redis-everysec,127.0.0.1,6380,10,20000,1,set,1000,32,6309.45,0.673,6.684,13.365,APPENDFSYNC=everysec; run=1; WSL2 Ubuntu
+2026-11-16T11:23:21.291Z,mini-redis-everysec,127.0.0.1,6380,10,20000,1,set,1000,32,10706.97,0.469,3.057,8.184,APPENDFSYNC=everysec; run=2; WSL2 Ubuntu
+2026-11-16T11:23:31.088Z,mini-redis-everysec,127.0.0.1,6380,10,20000,1,set,1000,32,18252.22,0.319,1.736,3.990,APPENDFSYNC=everysec; run=3; WSL2 Ubuntu
+2026-11-16T11:25:32.077Z,mini-redis-always,127.0.0.1,6380,10,20000,1,set,1000,32,183.81,51.047,70.659,89.591,APPENDFSYNC=always; run=1; WSL2 Ubuntu
+2026-11-16T11:28:03.604Z,mini-redis-always,127.0.0.1,6380,10,20000,1,set,1000,32,165.51,52.964,80.650,118.773,APPENDFSYNC=always; run=2; WSL2 Ubuntu
+2026-11-16T11:30:14.214Z,mini-redis-always,127.0.0.1,6380,10,20000,1,set,1000,32,193.12,49.951,66.394,78.038,APPENDFSYNC=always; run=3; WSL2 Ubuntu
+2026-11-16T11:30:22.449Z,mini-redis-no,127.0.0.1,6380,10,20000,1,set,1000,32,19754.74,0.329,1.378,3.061,APPENDFSYNC=no; run=1; WSL2 Ubuntu
+2026-11-16T11:30:30.023Z,mini-redis-no,127.0.0.1,6380,10,20000,1,set,1000,32,19416.41,0.302,1.434,3.705,APPENDFSYNC=no; run=2; WSL2 Ubuntu
+2026-11-16T11:30:39.538Z,mini-redis-no,127.0.0.1,6380,10,20000,1,set,1000,32,12565.58,0.471,2.389,7.008,APPENDFSYNC=no; run=3; WSL2 Ubuntu
+2026-11-16T11:30:46.185Z,redis-everysec,127.0.0.1,6379,10,20000,1,set,1000,32,15053.40,0.542,1.385,2.460,Redis Redis server v=8.0.5 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=d47fc40702b1fad8; mode=everysec; run=1; WSL2 Ubuntu
+2026-11-16T11:30:53.191Z,redis-everysec,127.0.0.1,6379,10,20000,1,set,1000,32,11923.80,0.627,1.808,3.792,Redis Redis server v=8.0.5 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=d47fc40702b1fad8; mode=everysec; run=2; WSL2 Ubuntu
+2026-11-16T11:31:00.293Z,redis-everysec,127.0.0.1,6379,10,20000,1,set,1000,32,12031.23,0.646,1.801,3.502,Redis Redis server v=8.0.5 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=d47fc40702b1fad8; mode=everysec; run=3; WSL2 Ubuntu
+2026-11-16T11:31:06.700Z,redis-aof-off,127.0.0.1,6379,10,20000,1,set,1000,32,14986.42,0.559,1.361,2.416,Redis Redis server v=8.0.5 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=d47fc40702b1fad8; mode=aof-off; run=1; WSL2 Ubuntu
+2026-11-16T11:31:14.262Z,redis-aof-off,127.0.0.1,6379,10,20000,1,set,1000,32,10019.98,0.697,2.571,6.181,Redis Redis server v=8.0.5 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=d47fc40702b1fad8; mode=aof-off; run=2; WSL2 Ubuntu
+2026-11-16T11:31:21.035Z,redis-aof-off,127.0.0.1,6379,10,20000,1,set,1000,32,12947.75,0.606,1.655,3.507,Redis Redis server v=8.0.5 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=d47fc40702b1fad8; mode=aof-off; run=3; WSL2 Ubuntu
