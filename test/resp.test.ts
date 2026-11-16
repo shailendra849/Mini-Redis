@@ -76,6 +76,13 @@ describe("RESP parser", () => {
     // Body is long enough, yet the two bytes after the payload are not CRLF.
     const brokenTail = parseCommand(Buffer.from("*1\r\n$2\r\nABXX"));
     assert.equal(brokenTail.status, "invalid");
+
+    const negativeCount = parseCommand(Buffer.from("*-1\r\n"));
+    assert.equal(negativeCount.status, "invalid");
+
+    const emptyArrayOk = parseCommand(Buffer.from("*0\r\n"));
+    assert.equal(emptyArrayOk.status, "complete");
+    if (emptyArrayOk.status === "complete") assert.deepEqual(emptyArrayOk.args, []);
   });
 
   it("parses a large bulk payload", () => {

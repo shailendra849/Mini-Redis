@@ -19,18 +19,29 @@ export function isCompleteReply(buf: Buffer): boolean {
   return false;
 }
 
-export async function sendCommand(port: number, args: string[], host = "127.0.0.1"): Promise<string> {
-  const payload = encodeArray(args);
+export async function sendRaw(port: number, payload: Buffer, host = "127.0.0.1"): Promise<string> {
   return await new Promise((resolve, reject) => {
     const socket = net.connect({ port, host }, () => socket.write(payload));
     let buf = Buffer.alloc(0);
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error(`timed out waiting for reply; got ${JSON.stringify(buf.toString("utf8"))}`));
+    }, 5_000);
     socket.on("data", (chunk) => {
       buf = Buffer.concat([buf, chunk]);
       if (isCompleteReply(buf)) {
+        clearTimeout(timer);
         socket.end();
         resolve(buf.toString("utf8"));
       }
     });
-    socket.on("error", reject);
+    socket.on("error", (cause) => {
+      clearTimeout(timer);
+      reject(cause);
+    });
   });
+}
+
+export async function sendCommand(port: number, args: string[], host = "127.0.0.1"): Promise<string> {
+  return sendRaw(port, encodeArray(args), host);
 }

@@ -72,6 +72,28 @@ describe("AOF", () => {
     assert.ok((store.ttl("temp") ?? -1) > 0);
   });
 
+  it("replay keeps the TTL index consistent with SET/DEL/EXPIRE records", async () => {
+    const future = Date.now() + 60_000;
+    const data = Buffer.concat([
+      encodeArray(["SET", "a", "1", "PXAT", String(future)]),
+      encodeArray(["SET", "a", "2"]), // clears TTL
+      encodeArray(["SET", "b", "1", "PXAT", String(future)]),
+      encodeArray(["DEL", "b"]),
+      encodeArray(["SET", "c", "1"]),
+      encodeArray(["PEXPIREAT", "c", String(future)]),
+    ]);
+
+    const store = new Store(1024 * 1024);
+    replayAofBuffer(data, store);
+
+    assert.equal(store.get("a"), "2");
+    assert.equal(store.ttl("a"), -1);
+    assert.equal(store.get("b"), undefined);
+    assert.equal(store.get("c"), "1");
+    assert.ok(store.ttl("c") > 0);
+    assert.equal(store.ttlCount, 1);
+  });
+
   it("does not resurrect keys whose PXAT deadline is already past", async () => {
     const past = Date.now() - 1000;
     const data = Buffer.concat([
