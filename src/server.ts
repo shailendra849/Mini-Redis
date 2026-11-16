@@ -73,10 +73,13 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
             return;
           }
           const result = execute(parsed.args, store);
-          if (result.persistedArgs) {
-            const write = aofWriter.append(encodeArray(result.persistedArgs));
+          if (result.persistedRecords?.length) {
+            // Append in order (e.g. SET then DEL for each maxmemory eviction).
+            const writes = result.persistedRecords.map((record) =>
+              aofWriter.append(encodeArray(record)),
+            );
             if (aofWriter.queuedBytes >= AOF_HIGH_WATER_BYTES) socket.pause();
-            const settled = write.then(() => {
+            const settled = Promise.all(writes).then(() => {
               if (!socket.destroyed && aofWriter.queuedBytes < AOF_LOW_WATER_BYTES) socket.resume();
             }).catch((cause: unknown) => {
               aofFailed = true;

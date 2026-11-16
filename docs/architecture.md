@@ -77,7 +77,7 @@ Trade-off: `always` is safest and slowest; `everysec` mirrors Redis’s common d
 
 - **Single-threaded** — one command queue, one event loop; no I/O threads like Redis’s bio threads.
 - **No AOF rewrite / compaction** — the file only grows; no BGREWRITEAOF.
-- **LRU eviction is not AOF-logged** — keys removed only for `maxmemory` can reappear after restart if older SET records are still in the AOF.
+- **Maxmemory eviction is AOF-logged as `DEL`** — after a `SET`/`INCR` that evicts LRU keys, the server appends one `DEL` per victim (same idea as Redis) so replay into a larger memory limit does not resurrect them. `removeNode` also drops victims from the TTL index.
 - **Limited command set** — strings-focused: no lists/hashes/sets/sorted sets, no `MULTI`/`EXEC`, pub/sub, Lua, streams, modules.
 - **No auth, TLS, replication, cluster, or RDB**.
 - **Approximate maxmemory** — not process RSS; large overheads (V8, buffers) are invisible to the cap.

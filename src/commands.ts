@@ -7,9 +7,20 @@ import {
 } from "./resp.js";
 import type { Store } from "./store.js";
 
-export type ExecutionResult = { response: Buffer; persistedArgs?: string[] };
+export type ExecutionResult = {
+  response: Buffer;
+  /** AOF records in order. Empty/omitted when replaying or for read-only commands. */
+  persistedRecords?: string[][];
+};
 
 type CommandHandler = (params: string[], store: Store) => ExecutionResult;
+
+/** Primary mutation first, then one DEL per maxmemory eviction (Redis-style). */
+function recordsWithEvictions(primary: string[], evicted: string[]): string[][] {
+  const records: string[][] = [primary];
+  for (const key of evicted) records.push(["DEL", key]);
+  return records;
+}
 
 const ping: CommandHandler = (params) => {
   if (params.length > 1) return { response: encodeError("wrong number of arguments for 'ping'") };
@@ -32,12 +43,13 @@ const set: CommandHandler = (params, store) => {
     else if (option.toUpperCase() === "PXAT") expiresAt = ttl;
     else return { response: encodeError("SET expiry option must be EX or PX") };
   }
-  store.set(key, value, expiresAt);
+  const evicted = store.set(key, value, expiresAt);
+  const primary = expiresAt === undefined
+    ? ["SET", key, value]
+    : ["SET", key, value, "PXAT", String(expiresAt)];
   return {
     response: encodeSimpleString("OK"),
-    persistedArgs: expiresAt === undefined
-      ? ["SET", key, value]
-      : ["SET", key, value, "PXAT", String(expiresAt)],
+    persistedRecords: recordsWithEvictions(primary, evicted),
   };
 };
 
@@ -51,7 +63,7 @@ const del: CommandHandler = (params, store) => {
   if (params.length < 1) return { response: encodeError("usage: DEL key [key ...]") };
   let deleted = 0;
   for (const key of params) if (store.delete(key)) deleted += 1;
-  return { response: encodeInteger(deleted), persistedArgs: ["DEL", ...params] };
+  return { response: encodeInteger(deleted), persistedRecords: [["DEL", ...params]] };
 };
 
 const exists: CommandHandler = (params, store) => {
@@ -69,8 +81,11 @@ const incr: CommandHandler = (params, store) => {
   }
   const next = Number(current) + 1;
   if (!Number.isSafeInteger(next)) return { response: encodeError("increment would overflow") };
-  store.set(params[0], String(next), store.getExpiresAt(params[0]));
-  return { response: encodeInteger(next), persistedArgs: ["INCR", params[0]] };
+  const evicted = store.set(params[0], String(next), store.getExpiresAt(params[0]));
+  return {
+    response: encodeInteger(next),
+    persistedRecords: recordsWithEvictions(["INCR", params[0]], evicted),
+  };
 };
 
 const expire: CommandHandler = (params, store) => {
@@ -79,10 +94,10 @@ const expire: CommandHandler = (params, store) => {
   if (!Number.isFinite(seconds)) return { response: encodeError("invalid expire time") };
   const expiresAt = Date.now() + seconds * 1000;
   const changed = seconds <= 0 ? store.delete(params[0]) : store.expire(params[0], expiresAt);
-  let persistedArgs: string[] | undefined;
-  if (changed && seconds > 0) persistedArgs = ["PEXPIREAT", params[0], String(expiresAt)];
-  else if (changed) persistedArgs = ["DEL", params[0]];
-  return { response: encodeInteger(changed ? 1 : 0), persistedArgs };
+  let persistedRecords: string[][] | undefined;
+  if (changed && seconds > 0) persistedRecords = [["PEXPIREAT", params[0], String(expiresAt)]];
+  else if (changed) persistedRecords = [["DEL", params[0]]];
+  return { response: encodeInteger(changed ? 1 : 0), persistedRecords };
 };
 
 const ttl: CommandHandler = (params, store) => {
@@ -120,7 +135,11 @@ export function execute(args: string[], store: Store, replay = false): Execution
 
   try {
     const result = handler(params, store);
-    return { response: result.response, persistedArgs: replay ? undefined : result.persistedArgs };
+    // Replay must mutate the store without appending to the AOF again.
+    return {
+      response: result.response,
+      persistedRecords: replay ? undefined : result.persistedRecords,
+    };
   } catch (cause) {
     return { response: encodeError(cause instanceof Error ? cause.message : "command failed") };
   }

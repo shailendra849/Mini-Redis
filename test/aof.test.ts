@@ -4,11 +4,53 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { AofWriter } from "../src/aof.js";
+import { execute } from "../src/commands.js";
 import { encodeArray } from "../src/resp.js";
 import { replayAofBuffer, replayAofFile } from "../src/replay.js";
 import { Store } from "../src/store.js";
 
 describe("AOF", () => {
+  it("logs DELs for maxmemory evictions so replay does not resurrect them", async () => {
+    // Each 1-byte key + 1-byte value costs 66 bytes with the +64 overhead.
+    const live = new Store(66 * 2);
+    const dir = await mkdtemp(path.join(os.tmpdir(), "mini-redis-aof-"));
+    const file = path.join(dir, "appendonly.aof");
+    const writer = new AofWriter(file, 1, "always");
+    await writer.open();
+
+    const apply = async (args: string[]) => {
+      const result = execute(args, live, false);
+      assert.equal(result.response[0], 0x2b /* + */, result.response.toString());
+      // Persist every AOF record the command emits (SET/INCR plus any eviction DELs).
+      for (const record of result.persistedRecords ?? []) {
+        await writer.append(encodeArray(record));
+      }
+      return result;
+    };
+
+    await apply(["SET", "a", "1"]);
+    await apply(["SET", "b", "1"]);
+    // Touch a so b is LRU; the next SET must evict b.
+    assert.equal(live.get("a"), "1");
+    await apply(["SET", "c", "1"]);
+
+    assert.equal(live.get("b"), undefined, "b should be evicted from the live store");
+    assert.equal(live.get("a"), "1");
+    assert.equal(live.get("c"), "1");
+    assert.equal(live.ttlCount, 0);
+
+    await writer.close();
+
+    // Replay into a large store so missing DELs would resurrect b.
+    const restored = new Store(1024 * 1024);
+    const replay = await replayAofFile(file, restored);
+    assert.equal(replay.stoppedOnIncompleteTail, false);
+    assert.equal(restored.get("b"), undefined, "evicted key must not reappear after AOF replay");
+    assert.equal(restored.get("a"), "1");
+    assert.equal(restored.get("c"), "1");
+    assert.equal(restored.ttlCount, 0);
+  });
+
   it("write then replay restores the same logical state", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "mini-redis-aof-"));
     const file = path.join(dir, "appendonly.aof");

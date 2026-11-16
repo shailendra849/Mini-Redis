@@ -117,7 +117,6 @@ Teaching clone, not production Redis. Notably:
 - Single-threaded command execution
 - Limited string command set (no lists/hashes, `MULTI`, pub/sub, replication, RDB, …)
 - No AOF rewrite/compaction
-- LRU eviction is **not** written to AOF (evicted keys can return after restart)
 - Approximate memory accounting (not RSS)
 - Truncated/corrupt AOF tail stops replay at that point
 - No auth / TLS
